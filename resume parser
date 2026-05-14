@@ -1,0 +1,198 @@
+"""
+resume_parser.py
+----------------
+Phase 2 — PDF Resume Text Extractor
+AI Resume Analyzer Project
+
+Extracts and cleans text from uploaded PDF resumes.
+Handles multi-page docs and flags image-only (scanned) PDFs.
+
+Dependencies:
+    pip install pypdf python-dotenv
+"""
+
+import os
+import re
+from pypdf import PdfReader
+
+
+# ─────────────────────────────────────────────
+#  CORE EXTRACTOR
+# ─────────────────────────────────────────────
+
+def extract_text_from_pdf(pdf_path: str) -> dict:
+    """
+    Extracts text from a PDF resume.
+
+    Args:
+        pdf_path: Absolute or relative path to the PDF file.
+
+    Returns:
+        A dict with keys:
+            - success      (bool)
+            - full_text    (str)   — all pages joined
+            - pages        (list)  — per-page text list
+            - page_count   (int)
+            - is_scanned   (bool)  — True if little/no text found (image PDF)
+            - metadata     (dict)  — author, title, creator, etc.
+            - error        (str)   — error message if success=False
+    """
+    result = {
+        "success": False,
+        "full_text": "",
+        "pages": [],
+        "page_count": 0,
+        "is_scanned": False,
+        "metadata": {},
+        "error": None,
+    }
+
+    # ── File validation ──────────────────────────────────────────────────────
+    if not os.path.exists(pdf_path):
+        result["error"] = f"File not found: {pdf_path}"
+        return result
+
+    if not pdf_path.lower().endswith(".pdf"):
+        result["error"] = "File must be a .pdf"
+        return result
+
+    # ── Read PDF ─────────────────────────────────────────────────────────────
+    try:
+        reader = PdfReader(pdf_path)
+
+        # Check if password-protected
+        if reader.is_encrypted:
+            result["error"] = "PDF is password-protected. Please upload an unlocked file."
+            return result
+
+        result["page_count"] = len(reader.pages)
+
+        # ── Extract text per page ────────────────────────────────────────────
+        pages_text = []
+        for i, page in enumerate(reader.pages):
+            raw = page.extract_text() or ""
+            cleaned = clean_text(raw)
+            pages_text.append(cleaned)
+
+        result["pages"] = pages_text
+        result["full_text"] = "\n\n".join(pages_text).strip()
+
+        # ── Scanned PDF detection ────────────────────────────────────────────
+        # If the entire document has fewer than 50 meaningful characters,
+        # it's likely a scanned/image-only PDF — flag it for OCR handling.
+        total_chars = len(result["full_text"].replace(" ", "").replace("\n", ""))
+        if total_chars < 50:
+            result["is_scanned"] = True
+            result["error"] = (
+                "This PDF appears to be scanned/image-based. "
+                "Text extraction returned very little content. "
+                "Consider using OCR (pytesseract) for this file."
+            )
+            return result
+
+        # ── Extract metadata ─────────────────────────────────────────────────
+        meta = reader.metadata or {}
+        result["metadata"] = {
+            "title":    getattr(meta, "title",    None),
+            "author":   getattr(meta, "author",   None),
+            "creator":  getattr(meta, "creator",  None),
+            "subject":  getattr(meta, "subject",  None),
+        }
+
+        result["success"] = True
+
+    except Exception as e:
+        result["error"] = f"Failed to read PDF: {str(e)}"
+
+    return result
+
+
+# ─────────────────────────────────────────────
+#  TEXT CLEANING
+# ─────────────────────────────────────────────
+
+def clean_text(raw: str) -> str:
+    """
+    Cleans raw extracted text:
+      - Removes excessive whitespace and blank lines
+      - Normalises line breaks
+      - Strips non-printable characters
+    """
+    if not raw:
+        return ""
+
+    # Remove non-printable / control characters (keep newlines and tabs)
+    text = re.sub(r"[^\x09\x0A\x0D\x20-\x7E\u00A0-\uFFFF]", " ", raw)
+
+    # Collapse multiple spaces into one
+    text = re.sub(r"[ \t]{2,}", " ", text)
+
+    # Collapse more than 2 consecutive newlines into 2
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    return text.strip()
+
+
+# ─────────────────────────────────────────────
+#  SECTION DETECTOR (bonus utility)
+# ─────────────────────────────────────────────
+
+SECTION_KEYWORDS = [
+    "education", "experience", "work experience", "skills",
+    "projects", "certifications", "summary", "objective",
+    "awards", "publications", "languages", "interests",
+]
+
+def detect_sections(full_text: str) -> dict:
+    """
+    Attempts to identify which resume sections are present.
+
+    Returns a dict like:
+        { "education": True, "skills": True, "projects": False, ... }
+    """
+    lower = full_text.lower()
+    return {
+        section: (section in lower)
+        for section in SECTION_KEYWORDS
+    }
+
+
+# ─────────────────────────────────────────────
+#  QUICK TEST  (run: python resume_parser.py)
+# ─────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import sys
+
+    # Pass a PDF path as a command-line arg, e.g.:
+    #   python resume_parser.py my_resume.pdf
+    if len(sys.argv) < 2:
+        print("Usage: python resume_parser.py <path_to_resume.pdf>")
+        sys.exit(1)
+
+    path = sys.argv[1]
+    print(f"\n📄 Parsing: {path}\n{'─' * 40}")
+
+    output = extract_text_from_pdf(path)
+
+    if not output["success"]:
+        print(f"❌ Error: {output['error']}")
+        sys.exit(1)
+
+    print(f"✅ Pages found   : {output['page_count']}")
+    print(f"🔍 Scanned PDF   : {output['is_scanned']}")
+    print(f"📝 Total chars   : {len(output['full_text'])}")
+    print(f"\n--- Metadata ---")
+    for k, v in output["metadata"].items():
+        if v:
+            print(f"  {k.capitalize()}: {v}")
+
+    print(f"\n--- Sections Detected ---")
+    sections = detect_sections(output["full_text"])
+    for sec, found in sections.items():
+        icon = "✅" if found else "❌"
+        print(f"  {icon} {sec.title()}")
+
+    print(f"\n--- Text Preview (first 500 chars) ---\n")
+    print(output["full_text"][:500])
+    print("\n" + "─" * 40)
